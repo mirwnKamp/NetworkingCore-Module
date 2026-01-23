@@ -7,21 +7,24 @@
 
 import Foundation
 
-public struct NetworkConfiguration {
-    public let baseURL: String
+public struct NetworkConfiguration: Sendable {
+    public let baseURL: URL
     public let defaultHeaders: [String: String]
-    public let defaultQueryItems: [URLQueryItem]
     public let timeout: TimeInterval
+    public let jsonDecoder: JSONDecoder
+    public let jsonEncoder: JSONEncoder
 
     public init(
-        baseURL: String,
+        baseURL: URL,
         defaultHeaders: [String: String] = [:],
-        defaultQueryItems: [URLQueryItem] = [],
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 60,
+        jsonDecoder: JSONDecoder = JSONDecoder(),
+        jsonEncoder: JSONEncoder = JSONEncoder()
     ) {
         self.baseURL = baseURL
         self.defaultHeaders = defaultHeaders
-        self.defaultQueryItems = defaultQueryItems
         self.timeout = timeout
+        self.jsonDecoder = jsonDecoder
+        self.jsonEncoder = jsonEncoder
     }
 }

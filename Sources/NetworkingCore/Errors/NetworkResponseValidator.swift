@@ -6,15 +6,26 @@
 //
 
 import Foundation
+import NetworkingCoreInterfaces
 
 public enum NetworkResponseValidator {
-    static func validate(data: Data, response: URLResponse) throws -> Data {
+
+    public static func validate(
+        data: Data,
+        response: URLResponse
+    ) throws -> Data {
+
         guard let http = response as? HTTPURLResponse else {
             throw NetworkError.invalidResponse
         }
+
         guard (200...299).contains(http.statusCode) else {
-            throw NetworkError.server(statusCode: http.statusCode, data: data)
+            throw NetworkError.httpStatus(
+                code: http.statusCode,
+                data: data
+            )
         }
+
         return data
     }
 }

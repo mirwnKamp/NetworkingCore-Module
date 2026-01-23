@@ -6,12 +6,9 @@
 //
 
 import Foundation
+import NetworkingCoreInterfaces
 
-public protocol TokenProvider {
-    func accessToken() async -> String?
-}
-
-public final class AuthInterceptor: RequestInterceptor {
+final class AuthInterceptor: RequestInterceptor {
 
     private let tokenProvider: TokenProvider
 

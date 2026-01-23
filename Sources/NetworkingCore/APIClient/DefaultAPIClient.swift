@@ -6,63 +6,102 @@
 //
 
 import Foundation
+import NetworkingCoreInterfaces
 
 public final class DefaultAPIClient: APIClient {
-
-    private let session: NetworkSession
     private let config: NetworkConfiguration
-    private let decoder: JSONDecoder
-    private let interceptor: RequestInterceptor?
+    private let session: NetworkSession
+    private let builder: RequestBuilding
+    private let interceptors: [RequestInterceptor]
+    private let retryStrategy: RetryStrategy?
 
-    public init(
+    init(
         config: NetworkConfiguration,
         session: NetworkSession = URLSession.shared,
-        decoder: JSONDecoder = JSONDecoder(),
-        interceptor: RequestInterceptor? = nil
+        interceptors: [RequestInterceptor] = [],
+        retryStrategy: RetryStrategy? = nil,
+        builder: RequestBuilding? = nil
     ) {
         self.config = config
         self.session = session
-        self.decoder = decoder
-        self.interceptor = interceptor
+        self.interceptors = interceptors
+        self.retryStrategy = retryStrategy
+        self.builder = builder ?? RequestBuilder()
     }
 
-    public func request<T: Decodable>(_ endpoint: Endpoint) async throws -> T {
-        let data = try await request(endpoint)
-        do {
-            return try decoder.decode(T.self, from: data)
-        } catch {
-            throw NetworkError.decoding(error)
-        }
+    public func request(_ endpoint: any Endpoint) async throws {
+        _ = try await perform(endpoint, decode: EmptyResponse.self)
     }
 
-    public func request(_ endpoint: Endpoint) async throws -> Data {
-        var request = try endpoint.makeRequest(using: config)
+    public func request<T: Decodable>(_ endpoint: any Endpoint, as type: T.Type) async throws -> T {
+        try await perform(endpoint, decode: T.self)
+    }
 
-        if let interceptor {
-            request = try await interceptor.adapt(request)
-        }
+    private func perform<T: Decodable>(_ endpoint: any Endpoint, decode: T.Type) async throws -> T {
+        var attempt = 0
 
-        do {
-            let (data, response) = try await session.data(for: request)
-            let validated = try NetworkResponseValidator.validate(data: data, response: response)
+        while true {
+            do {
+                var request = try builder.build(from: endpoint, config: config)
+                for i in interceptors {
+                    request = try await i.adapt(request)
+                }
 
-            // Retry policy (αν έχει)
-            if let retryInterceptor = interceptor as? RetryInterceptor,
-               await retryInterceptor.shouldRetry(request: request, response: response, data: data, error: nil) {
+                let (data, response) = try await session.data(for: request)
 
-                let retryRequest = retryInterceptor.incrementRetryCount(request)
-                let (data2, response2) = try await session.data(for: retryRequest)
-                return try NetworkResponseValidator.validate(data: data2, response: response2)
+                guard let http = response as? HTTPURLResponse else {
+                    throw NetworkError.invalidResponse
+                }
+
+                guard (200..<300).contains(http.statusCode) else {
+                    throw NetworkError.httpStatus(code: http.statusCode, data: data)
+                }
+
+                if T.self == EmptyResponse.self {
+                    return EmptyResponse() as! T
+                }
+
+                do {
+                    return try config.jsonDecoder.decode(T.self, from: data)
+                } catch {
+                    throw NetworkError.decoding(error)
+                }
+
+            } catch {
+                // map common URLSession errors
+                let mapped = mapTransport(error)
+
+                // retry?
+                if let retryStrategy,
+                   await retryStrategy.shouldRetry(
+                        request: URLRequest(url: config.baseURL), // you can pass the real request by storing it
+                        response: nil,
+                        error: mapped,
+                        attempt: attempt
+                   ) {
+                    attempt += 1
+                    continue
+                }
+
+                throw mapped
             }
-
-            return validated
-        } catch {
-            if let interceptor,
-               await interceptor.shouldRetry(request: request, response: nil, data: nil, error: error) {
-                let (data2, response2) = try await session.data(for: request)
-                return try NetworkResponseValidator.validate(data: data2, response: response2)
-            }
-            throw NetworkError.underlying(error)
         }
     }
+
+    private func mapTransport(_ error: Error) -> Error {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorCancelled: return NetworkError.cancelled
+            case NSURLErrorTimedOut: return NetworkError.timeout
+            default: return NetworkError.transport(error)
+            }
+        }
+        if let e = error as? NetworkError { return e }
+        return NetworkError.transport(error)
+    }
+}
+
+private struct EmptyResponse: Decodable {
+    init() {}
 }
