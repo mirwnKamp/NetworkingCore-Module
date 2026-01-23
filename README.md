@@ -8,8 +8,6 @@ It is built as a **Swift Package** and follows **dependency inversion** by separ
 
 This makes it easy to test, extend, and reuse across multiple apps.
 
----
-
 ## Features
 
 - Swift Package Manager (SPM)
@@ -52,8 +50,6 @@ Includes:
 - `RetryStrategy`
 - `NetworkSession`
 - `TokenProvider`
-
----
 
 ### `NetworkingCore`
 Contains **concrete implementations**.
