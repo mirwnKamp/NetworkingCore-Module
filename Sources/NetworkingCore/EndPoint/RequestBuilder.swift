@@ -14,11 +14,11 @@ public protocol RequestBuilding {
 
 final class RequestBuilder: RequestBuilding {
     func build(from endpoint: any Endpoint, config: NetworkConfiguration) throws -> URLRequest {
-        guard var components = URLComponents(url: config.baseURL, resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: endpoint.baseURL, resolvingAgainstBaseURL: false) else {
             throw NetworkError.invalidBaseURL
         }
 
-        // baseURL may already have a path; append endpoint path safely
+        // baseURL may already have a path, append endpoint path safely
         components.path = (components.path as NSString).appendingPathComponent(endpoint.path)
         if let queryItems = endpoint.queryItems, !queryItems.isEmpty {
             components.queryItems = queryItems

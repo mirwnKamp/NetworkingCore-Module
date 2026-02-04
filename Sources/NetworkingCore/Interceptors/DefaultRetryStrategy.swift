@@ -27,14 +27,22 @@ final class DefaultRetryStrategy: RetryStrategy {
         error: Error,
         attempt: Int
     ) async -> Bool {
-
+        
         guard attempt < maxRetries else { return false }
-
-        if let http = response {
-            return retryStatusCodes.contains(http.statusCode)
+        
+        if let networkError = error as? NetworkError {
+            switch networkError {
+            case .timeout, .transport:
+                return true
+            default:
+                return false
+            }
         }
-
-        // Transport-level errors (timeout, offline, etc.)
-        return true
+        
+        if let status = response?.statusCode {
+            return retryStatusCodes.contains(status)
+        }
+        
+        return false
     }
 }

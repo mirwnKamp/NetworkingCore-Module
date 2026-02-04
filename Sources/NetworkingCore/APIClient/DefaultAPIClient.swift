@@ -14,8 +14,9 @@ public final class DefaultAPIClient: APIClient {
     private let builder: RequestBuilding
     private let interceptors: [RequestInterceptor]
     private let retryStrategy: RetryStrategy?
-
-    init(
+    private var lastResponse: HTTPURLResponse?
+    
+    public init(
         config: NetworkConfiguration,
         session: NetworkSession = URLSession.shared,
         interceptors: [RequestInterceptor] = [],
@@ -30,23 +31,35 @@ public final class DefaultAPIClient: APIClient {
     }
 
     public func request(_ endpoint: any Endpoint) async throws {
-        _ = try await perform(endpoint, decode: EmptyResponse.self)
+        _ = try await execute(endpoint)
     }
 
-    public func request<T: Decodable>(_ endpoint: any Endpoint, as type: T.Type) async throws -> T {
-        try await perform(endpoint, decode: T.self)
-    }
+    public func request<T: Decodable>(
+        _ endpoint: any Endpoint,
+        as type: T.Type
+    ) async throws -> T {
 
-    private func perform<T: Decodable>(_ endpoint: any Endpoint, decode: T.Type) async throws -> T {
+        let data = try await execute(endpoint)
+
+        do {
+            return try config.jsonDecoder.decode(T.self, from: data)
+        } catch {
+            throw NetworkError.decoding(error)
+        }
+    }
+    
+    private func execute(_ endpoint: any Endpoint) async throws -> Data {
         var attempt = 0
 
         while true {
-            do {
-                var request = try builder.build(from: endpoint, config: config)
-                for i in interceptors {
-                    request = try await i.adapt(request)
-                }
+            try Task.checkCancellation()
 
+            var request = try builder.build(from: endpoint, config: config)
+            for interceptor in interceptors {
+                request = try await interceptor.adapt(request)
+            }
+
+            do {
                 let (data, response) = try await session.data(for: request)
 
                 guard let http = response as? HTTPURLResponse else {
@@ -54,28 +67,25 @@ public final class DefaultAPIClient: APIClient {
                 }
 
                 guard (200..<300).contains(http.statusCode) else {
-                    throw NetworkError.httpStatus(code: http.statusCode, data: data)
+                    throw NetworkError.httpStatus(
+                        code: http.statusCode,
+                        data: data
+                    )
                 }
 
-                if T.self == EmptyResponse.self {
-                    return EmptyResponse() as! T
-                }
-
-                do {
-                    return try config.jsonDecoder.decode(T.self, from: data)
-                } catch {
-                    throw NetworkError.decoding(error)
-                }
+                return data
 
             } catch {
-                // map common URLSession errors
+                if Task.isCancelled {
+                    throw NetworkError.cancelled
+                }
+
                 let mapped = mapTransport(error)
 
-                // retry?
                 if let retryStrategy,
                    await retryStrategy.shouldRetry(
-                        request: URLRequest(url: config.baseURL), // you can pass the real request by storing it
-                        response: nil,
+                        request: request,
+                        response: lastResponse,
                         error: mapped,
                         attempt: attempt
                    ) {
@@ -89,19 +99,30 @@ public final class DefaultAPIClient: APIClient {
     }
 
     private func mapTransport(_ error: Error) -> Error {
-        let ns = error as NSError
-        if ns.domain == NSURLErrorDomain {
-            switch ns.code {
-            case NSURLErrorCancelled: return NetworkError.cancelled
-            case NSURLErrorTimedOut: return NetworkError.timeout
-            default: return NetworkError.transport(error)
-            }
+        if let networkError = error as? NetworkError {
+            return networkError
         }
-        if let e = error as? NetworkError { return e }
-        return NetworkError.transport(error)
-    }
-}
 
-private struct EmptyResponse: Decodable {
-    init() {}
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else {
+            return NetworkError.transport(error)
+        }
+
+        switch ns.code {
+        case NSURLErrorCancelled:
+            return NetworkError.cancelled
+
+        case NSURLErrorTimedOut:
+            return NetworkError.timeout
+
+        case NSURLErrorNotConnectedToInternet,
+             NSURLErrorNetworkConnectionLost,
+             NSURLErrorCannotConnectToHost,
+             NSURLErrorCannotFindHost:
+            return NetworkError.transport(error)
+
+        default:
+            return NetworkError.transport(error)
+        }
+    }
 }
